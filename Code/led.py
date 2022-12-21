@@ -1,5 +1,4 @@
 import RPi.GPIO as GPIO
-from time import sleep
 from enum import Enum
 
 GPIO.setwarnings(False)
@@ -55,4 +54,3 @@ class PinHandler:
 
 
 pin_handler = PinHandler()
-

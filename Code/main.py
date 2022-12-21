@@ -20,7 +20,7 @@ RIGHT = 1
 MID = 2
 
 MIN_TEMP = 29
-MAX_TEMP = 70
+MAX_TEMP = 50
 LOGGING_PERIOD = 1 * 60  # Seconds
 
 last_time = None
