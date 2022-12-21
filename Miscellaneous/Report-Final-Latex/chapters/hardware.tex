@@ -1,0 +1,399 @@
+\section{طراحی و پیاده‌سازی}
+
+اصلی‌ترین قسمت این پروژه، طراحی و پیاده‌سازی قسمت‌های سخت‌افزاری آن است. در زیر لیستی از قطعات سخت‌افزاری مورد استفاده آمده است و پس‌ از آن توضیحاتی در مورد هر یک از سنسور‌ها و نحوه کارکرد و راه‌اندازی آن ذکر شده است.
+
+
+\begin{itemize}
+	\item برد \lr{Raspberry Pi 3}
+	\item سنسور دوربین حرارتی  \lr{AMG8833}
+	\item چراغ‌های led
+\end{itemize}
+
+
+\subsection{دوربین حرارتی}
+
+یک آرایه سنسور مادون قرمز کم هزینه است که توسط پاناسونیک توسعه یافته است. برای استفاده با میکروکنترلرها در یک ماژول با شیفترهای سطح و تنظیم کننده ولتاژ یکپارچه شده است که برق و داده 3 تا 5 ولت را می دهد.
+\\
+این سنسور تنها 64 پیکسل (8×8) دارد که خیلی زیاد نیست اما برای آزمایش کافی و کار با آن ساده است، همچنین قیمت مناسبی نیز دارد. 
+\\
+ماژول را می‌توان به راحتی به برد متصل کرد و داده‌های دمایی تصویر را دریافت و پردازش نمود.
+
+\begin{figure}[H]
+	\begin{center}
+		\includegraphics[width=0.5\textwidth]{figs/AMG8833-module-1-500x500 (1).jpg}
+	\end{center}
+	\caption{\lr{AMG8833}}
+\end{figure}
+
+
+در تصویر زیر نیز می‌توانید نحوه‌ی اتصال این ماژول به رزپری را مشاهده کنید.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.5\textwidth]{figs/amg8833_RPi4_wiring.png}
+	
+	\caption{اتصال سنسور \lr{AMG8833}}
+	\label{fig:2}
+\end{figure}
+
+
+برای خواندن مقادیر از کتاب‌خانه‌ی \lr{smbus}
+\footnote{\lr{https://pypi.org/project/smbus2/}}
+استفاده شده است. البته این کتابخانه مخصوص این ماژول نمی‌باشد و صرفا خواندن سریال از طریق \lr{i2c} را برایمان راحت کرده است. در نتیجه کد اصلی خواندن دیتا دز دوربین حرارتی پیاده سازی شده است که در ادامه خواهید دید.
+
+کد اصلی مربوط به این قسمت در زیر آورده شده است:
+
+\begin{latin}
+\begin{lstlisting}[language=python]
+import smbus  # i2c bus
+
+#
+GE_I2C_ADDRESS = 0X69
+RPI_BUS = 0X01
+#
+#############################
+# Base Register Addresses
+#############################
+#
+# ... You can see the original code for these initializations
+#
+#############################
+# Base Write Registers
+#############################
+#
+# ... You can see the original code for these initializations
+#
+##################################
+# I2C Bus Initialization and
+# Register Read/Write Commands
+##################################
+#
+def get_i2c_device(address, busnum, i2c_interface=None, **kwargs):
+    return i2c_driver(address, busnum, i2c_interface, **kwargs)
+
+
+class i2c_driver(object):
+    def __init__(self, address, busnum, i2c_interface=None):
+        self._address = address
+        # specify smbus for RPi (smbus 1 for RPi 2,3,4)
+        self._bus = smbus.SMBus(busnum)
+
+    def write8(self, register, value):
+        # write 8-bits to specified register
+        value = value & 0xFF
+        self._bus.write_byte_data(self._address, register, value)
+
+    def read16(self, register, little_endian=True):
+        # read 16-bits from specified register
+        result = self._bus.read_word_data(self._address, register) & 0xFFFF
+        if not little_endian:
+            result = ((result << 8) & 0xFF00) + (result >> 8)
+        return result
+
+
+class AMG8833(object):
+    def __init__(self, addr=GE_I2C_ADDRESS, bus_num=RPI_BUS):
+        self.device = get_i2c_device(addr, bus_num)
+
+        self.set_sensor_mode(GE_PCTL_NORMAL_MODE)  # set sensor mode
+        self.reset_flags(GE_RST_INITIAL_RST)  # reset at startup
+        self.set_interrupt_mode(GE_INTC_OFF)  # set interrupt mode
+        self.set_sample_rate(GE_FPSC_10FPS)  # set sample rate
+
+    def set_sensor_mode(self, mode):
+        self.device.write8(GE_POWER_CTL_REG, mode)  # mode
+
+    def reset_flags(self, value):
+        self.device.write8(GE_RESET_REG, value)  # reset
+
+    def set_sample_rate(self, value):
+        self.device.write8(GE_FPSC_REG, value)  # sample rate
+
+    def set_interrupt_mode(self, mode):
+        self.device.write8(GE_INT_CTL_REG, mode)  # interrupts
+
+    def clear_status(self, value):
+        self.device.write8(GE_SCLR_REG, value)  # overflows
+
+    def read_temp(self, PIXEL_NUM):
+        T_arr = []  # temp array
+        status = False  # status boolean for errors
+        for i in range(0, PIXEL_NUM):
+            raw = self.device.read16(GE_PIXEL_BASE + (i << 1))
+            converted = self.twos_compl(raw) * 0.25
+            if converted < -20 or converted > 100:
+                return True, T_arr  # return error if outside temp window
+            T_arr.append(converted)
+        return status, T_arr
+
+    def read_thermistor(self):
+        # read thermistor (background temp)
+        raw = self.device.read16(GE_TTHL_REG)
+        return self.signed_conv(raw) * 0.0625  # scaling values 0.0625
+
+    @staticmethod
+    def twos_compl(val):  # conversion for pixels
+        if 0x7FF & val == val:
+            return float(val)
+        else:
+            return float(val - 4096)
+
+    @staticmethod
+    def signed_conv(val):  # conversion for thermistor
+        if 0x7FF & val == val:
+            return float(val)
+        else:
+            return -float(0x7FF & val)
+
+\end{lstlisting}
+\end{latin}
+
+در نهایت تابعی که برای خواندن کل آرایه ۸ در ۸ نهایی استفاده می‌شود، تابع \lr{read\_temp} از کلاس تعریف شده در این کد است. این تابع آرایه‌ای شامل ۶۴ عدد \lr{integer} برمی‌گرداند که هر کدام از این اعداد دمای یک پیکسل از ۶۴ پیکسل قابل دید توسط دوربین را نمایش می‌دهد. سپس این آرایه به کمک \lr{numpy} به صورت یک مارتیس ۸ در ۸ در می‌آید که در ادامه خواهیم دید.
+
+
+\subsection{چراغ‌های \lr{LED}}
+با توجه به اینکه اتصال چراغ‌های \lr{LED} تنها نیاز به یک ولتاژ صفر و یک ولتاژ فعال دارد، از توضیح نحوه اتصالشان صرف نظر می‌کنیم. در ادامه‌ می‌توانید کد پیاده‌سازی شده برای روشن یا خاموش کردن چراغ‌ها را مشاهده کنید.
+
+\begin{latin}
+\begin{lstlisting}[language=python]
+import RPi.GPIO as GPIO
+from enum import Enum
+
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BOARD)
+
+
+class Pin(Enum):
+    UP = 8
+    DOWN = 10
+    LEFT = 13
+    RIGHT = 15
+
+
+class PinHandler:
+
+    def __init__(self):
+        GPIO.setup(Pin.UP.value, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(Pin.DOWN.value, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(Pin.LEFT.value, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(Pin.RIGHT.value, GPIO.OUT, initial=GPIO.LOW)
+
+    @staticmethod
+    def up_on():
+        GPIO.output(Pin.UP.value, GPIO.HIGH)
+
+    @staticmethod
+    def up_off():
+        GPIO.output(Pin.UP.value, GPIO.LOW)
+
+    @staticmethod
+    def down_on():
+        GPIO.output(Pin.DOWN.value, GPIO.HIGH)
+
+    @staticmethod
+    def down_off():
+        GPIO.output(Pin.DOWN.value, GPIO.LOW)
+
+    @staticmethod
+    def left_on():
+        GPIO.output(Pin.LEFT.value, GPIO.HIGH)
+
+    @staticmethod
+    def left_off():
+        GPIO.output(Pin.LEFT.value, GPIO.LOW)
+
+    @staticmethod
+    def right_on():
+        GPIO.output(Pin.RIGHT.value, GPIO.HIGH)
+
+    @staticmethod
+    def right_off():
+        GPIO.output(Pin.RIGHT.value, GPIO.LOW)
+
+
+\end{lstlisting}
+\end{latin}
+
+همانطور که در کد می‌توان دید، ۴تابع روشن کردن و ۴تابع خاموش کردن چراغ داریم که هر جفت از خاموش و روشن کردن‌ها مربوط به یکی از جهات بالا، پایین، راست و چپ است.
+
+\subsection{بخش نرم افزاری اصلی}
+در کنار کد‌های قبلی، یک کد اصلی نیز وجود دارد که مغز اصلی سیستم است و با توجه به شرایط و به تناسب از توابع تعریف شده استفاده می‌کند. در این قسمت بخش‌های مختلف این کد را بررسی‌ می‌کنیم.
+
+در ابتدا کتابخانه‌های مورد نیاز را \lr{import} می‌کنیم. در اینجا از کتابخانه‌ی \lr{logging} برای نگه داشتن تاریخچه‌ی تشخیص‌های سیستم از موجودات زنده استفاده می‌کنیم. همانطور که می‌بینید این تاریخچه در فایلی با اسم \lr{history.log} ذخیره می‌شود.فرمت لاگ خروجی را نیز می‌توانید در زیر ببینید:
+
+\begin{latin}
+    2022-12-20 16:07:25,426 - LEFT - 30.0625
+\end{latin}
+
+سپس تعداد متغیر اولیه تنظیم شده است که هرکدام استفاده خاص خود را دارند. به عنوان مثال متغیرهای \lr{MIN\_TEMP} و \lr{MAX\_TEMP} بازه‌ی دمایی موجودات زنده را برای سیستم مشخص می‌کند.
+
+\begin{latin}
+\begin{lstlisting}[language=python]
+import time
+import sys
+import logging
+
+import numpy as np
+
+import amg8833_i2c
+import led
+
+logging.basicConfig(level=logging.INFO, filename='history.log',
+                    format='%(asctime)s - %(message)s')
+
+sys.path.append('/')
+
+
+pin_handler = led.PinHandler()
+
+LEFT = 0
+RIGHT = 1
+MID = 2
+
+MIN_TEMP = 29
+MAX_TEMP = 50
+LOGGING_PERIOD = 1 * 60  # Seconds
+
+last_time = None
+
+\end{lstlisting}
+\end{latin}
+
+برای تشخیص موجود زنده دو تابع اصلی وجود دارد. در این تابع پنجره‌ای ۲ در ۲ در نظر گرفته می‌شود و این پنجره روی کل ماتریس ۸ در ۸ حاصل از خواندن داده‌های دوربین حرارتی لغزانده می‌شود و روی هر ۴ درایه‌ از این ماتریس که قرار گرفت، میانگین دماهای این ۴ خانه را محاسبه می‌کند. با توجه به اینکه این میانگین در بازه ی تعریف شده وجود دارد یا نه، تشخیص می‌دهد که موجود زنده‌ جلوی سیستم وجود دارد یا خیر. این میانگین‌گیری برای جلوگیری از خطای احتمالی پیکسل‌های جداگانه است تا سیستم منعطف‌تر کار کند و با کوچیکترین تغییر دما واکنش نشان ندهد. در ادامه می‌توانید کد مربوط به این دو تابع را مشاهده کنید.
+
+\begin{latin}
+\begin{lstlisting}[language=python]
+
+def generate_submatrices(matrix, sub_size=2):
+    submatrices = []
+    for i in range(len(matrix) - sub_size + 1):
+        for j in range(len(matrix) - sub_size + 1):
+            direction = LEFT
+
+            if j == len(matrix) / 2 - 1:
+                direction = MID
+            elif j >= len(matrix) / 2:
+                direction = RIGHT
+
+            submatrices.append(
+                (direction, matrix[i:i + sub_size, j:j + sub_size]))
+
+    return submatrices
+
+def decide_lights(sub_matrices):
+    global last_time
+
+    found_left = False
+    found_right = False
+
+    for direction, sub_matrix in sub_matrices:
+        mean = np.mean(sub_matrix)
+
+        if MIN_TEMP <= mean <= MAX_TEMP:
+            if direction == LEFT:
+                pin_handler.left_on()
+                found_left = True
+
+                if not last_time or time.time() - last_time >= LOGGING_PERIOD:
+                    log("LEFT", mean, sub_matrix)
+
+            elif direction == RIGHT:
+                pin_handler.right_on()
+                found_right = True
+
+                if not last_time or time.time() - last_time >= LOGGING_PERIOD:
+                    log("RIGHT", mean, sub_matrix)
+
+            elif direction == MID:
+                pin_handler.left_on()
+                pin_handler.right_on()
+                found_right = True
+                found_left = True
+
+                if not last_time or time.time() - last_time >= LOGGING_PERIOD:
+                    log("MID", mean, sub_matrix)
+
+    if not found_left:
+        pin_handler.left_off()
+
+    if not found_right:
+        pin_handler.right_off()
+
+    if not found_left and not found_right:
+        last_time = None
+
+
+
+\end{lstlisting}
+\end{latin}
+
+در تابع \lr{generate\_submatrices} تمام ماتریس‌های ۲ در ۲ ممکن استخراج می‌شود. همچنین در همین تابع تشخیص داده می‌شود که هرکدام از ماتریس‌های ۲ در ۲ تولید شده، در کدام سمت راننده است، در چپ یا راست. این تشخیص جهت به این دلیل است که چراغ درست روشن شود. اگر موجود زنده در سمت راست بود، چراغ راست و اگر در چپ بود چراغ چپ روشن شود. در تابع \lr{decide\_lights} نیز بر اساس داده‌های تولید شده از تابع قبل، تصمیم گرفته می‌شود که کدام چراغ‌ها روشن و یا خاموش شوند. همچنین فرایند ثبت شناسایی‌ها در تاریخچه نیز در همین تابع انجام می‌گیرد. این کار با صدا زدن تابع \lr{log} انجام می‌شود. کد مربوط به این تابع را می‌توانید در زیر ببینید.
+
+\begin{latin}
+\begin{lstlisting}[language=python]
+
+def log(direction, mean, sub_matrix):
+    global last_time
+
+    last_time = time.time()
+    logging.info(f"{direction} - {mean} - {sub_matrix}")
+
+\end{lstlisting}
+\end{latin}
+
+در نهایت یک تابع \lr{main} وجود دارد که در یک حلقه‌ی بینهایت مقادیر دوربین حرارتی را خوانده و توابع تعریف شده در بالا را صدا می‌زند. این کد را می‌توانید در زیر مشاهده کنید:
+
+\begin{latin}
+\begin{lstlisting}[language=python]
+
+def main():
+
+    t0 = time.time()
+    sensor = []
+
+    while (time.time() - t0) < 1:
+        try:
+            sensor = amg8833_i2c.AMG8833(addr=0x69)
+        except Exception as e:
+            sensor = amg8833_i2c.AMG8833(addr=0x68)
+        finally:
+            pass
+
+    time.sleep(0.1)
+
+    if not sensor:
+        print("No AMG8833 Found - Check Your Wiring")
+        sys.exit()
+
+    pixels_resolution = (8, 8)
+
+    pixels_to_read = 64
+
+    while True:
+        status, pixels = sensor.read_temp(pixels_to_read)
+        if status:
+            continue
+
+        T_thermistor = sensor.read_thermistor()
+
+        pixels_reshaped = np.reshape(pixels, pixels_resolution)
+        submatrices = generate_submatrices(pixels_reshaped)
+
+        decide_lights(submatrices)
+        print(pixels_reshaped)
+        print("Thermistor Temperature: {0:2.2f}".format(T_thermistor))
+
+
+if __name__ == '__main__':
+    main()
+
+\end{lstlisting}
+\end{latin}
+
+در این تابع ابتدا دوربین حرارتی اتصالش برقرار شده سپس همواره ۶۴ پیکسل از آن خوانده می‌شود و به صورت یک ماتریس ۸ در ۸ تبدیل می‌شود. سپس ماتریس‌های ۲ در ۲ تولید شده از آن به تابع \lr{decide\_lights} داده می‌شود تا تصمیمگیری‌های مربوط به چراغ‌ها را انجام دهد. این فرایند تا زمان خرابی سیستم یا قطع آن توسط کاربر انجام خواهد شد.
+
+
+
+\subsection{بسته بندی}
+این قسمت هنوز طراحی نشده است.
+
