@@ -1,19 +1,5 @@
-#######################################################
-# Registers for Reading/Writing to AMG8833 via I2C
-# --- Based on AMG88xx Specification by Panasonic
-#
-# by Joshua Hrisko
-#    Copyright 2021 | Maker Portal LLC
-#
-#######################################################
-#
 import smbus  # i2c bus
-import time
 
-#
-#############################
-# Device/I2C Info
-#############################
 #
 GE_I2C_ADDRESS = 0X69
 RPI_BUS = 0X01
@@ -136,7 +122,8 @@ class AMG8833(object):
         return status, T_arr
 
     def read_thermistor(self):
-        raw = self.device.read16(GE_TTHL_REG)  # read thermistor (background temp)
+        # read thermistor (background temp)
+        raw = self.device.read16(GE_TTHL_REG)
         return self.signed_conv(raw) * 0.0625  # scaling values 0.0625
 
     @staticmethod
